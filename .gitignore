@@ -9,6 +9,10 @@ __pycache__/
 backend/.env
 frontend/.env
 
+# Databases
+*.db
+backend/paperiq.db
+
 # Node / Next
 node_modules/
 .next/

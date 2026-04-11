@@ -3,21 +3,30 @@ venv/
 .venv/
 __pycache__/
 *.pyc
-
-# Env files
+*.pyo
+*.pyd
 .env
-backend/.env
-frontend/.env
 
-# Databases
+# SQLite / local DB
 *.db
-backend/paperiq.db
+*.sqlite3
 
-# Node / Next
+# Node
 node_modules/
 .next/
 out/
+dist/
 
-# OS / editor
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# macOS
 .DS_Store
+
+# VS Code
 .vscode/
+
+# coverage
+coverage/

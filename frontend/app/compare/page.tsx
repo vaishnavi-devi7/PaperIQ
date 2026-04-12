@@ -10,6 +10,7 @@ type ComparedDocument = {
   text: string;
   summary: string;
   keywords: string[];
+  research_gaps?: string[];
   scores: {
     Language: number;
     Coherence: number;
@@ -130,6 +131,14 @@ export default function ComparePage() {
     "Readability",
   ] as const;
 
+  const getBestDoc = (metric: (typeof metrics)[number]) => {
+    if (!results?.documents?.length) return null;
+
+    return [...results.documents].sort(
+      (a, b) => b.scores[metric] - a.scores[metric]
+    )[0];
+  };
+
   return (
     <ThemeProvider>
       <main className="app-shell">
@@ -145,7 +154,8 @@ export default function ComparePage() {
                 Compare 2 to 3 research papers
               </h1>
               <p className="hero-subtitle" style={{ maxWidth: 760 }}>
-                Compare summaries, scores, keywords, shared topics, and unique ideas side by side.
+                Compare summaries, quality scores, research gaps, shared topics,
+                and keyword overlap side by side.
               </p>
             </div>
           </div>
@@ -188,12 +198,7 @@ export default function ComparePage() {
               </p>
 
               {selectedFiles.length > 0 && (
-                <div
-                  style={{
-                    display: "grid",
-                    gap: 12,
-                  }}
-                >
+                <div style={{ display: "grid", gap: 12 }}>
                   {selectedFiles.map((file) => (
                     <div
                       key={file.name}
@@ -216,7 +221,13 @@ export default function ComparePage() {
                         >
                           {file.name}
                         </div>
-                        <div style={{ color: "var(--muted)", fontSize: 13, marginTop: 6 }}>
+                        <div
+                          style={{
+                            color: "var(--muted)",
+                            fontSize: 13,
+                            marginTop: 6,
+                          }}
+                        >
                           {(file.size / 1024 / 1024).toFixed(2)} MB
                         </div>
                       </div>
@@ -270,6 +281,23 @@ export default function ComparePage() {
 
           {results && (
             <>
+              <div className="grid-3" style={{ marginTop: 28 }}>
+                {metrics.map((metric) => {
+                  const best = getBestDoc(metric);
+                  return (
+                    <div key={metric} className="stat-card">
+                      <p className="stat-label">Best in {metric}</p>
+                      <div
+                        className="stat-value"
+                        style={{ fontSize: 22, overflowWrap: "anywhere" }}
+                      >
+                        {best?.filename || "—"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
               <div className="glass-card" style={{ marginTop: 28, padding: 30 }}>
                 <h2 className="section-title">Score Comparison</h2>
                 <div style={{ overflowX: "auto", marginTop: 18 }}>
@@ -304,7 +332,7 @@ export default function ComparePage() {
                 style={{
                   marginTop: 28,
                   display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
                   gap: 20,
                 }}
               >
@@ -315,16 +343,83 @@ export default function ComparePage() {
                       {doc.filename}
                     </h3>
 
-                    <p style={{ marginTop: 14, lineHeight: 1.8 }}>
-                      {doc.summary}
-                    </p>
+                    <div style={{ marginTop: 16 }}>
+                      <div style={{ fontWeight: 800, fontSize: 16 }}>Summary</div>
+                      <p style={{ marginTop: 10, lineHeight: 1.8 }}>{doc.summary}</p>
+                    </div>
 
-                    <div className="flex-row" style={{ marginTop: 14 }}>
-                      {doc.keywords.map((kw) => (
-                        <span key={`${doc.filename}-${kw}`} className="tag-chip">
-                          {kw}
-                        </span>
-                      ))}
+                    <div style={{ marginTop: 16 }}>
+                      <div style={{ fontWeight: 800, fontSize: 16 }}>Keywords</div>
+                      <div className="flex-row" style={{ marginTop: 12 }}>
+                        {doc.keywords.map((kw) => (
+                          <span key={`${doc.filename}-${kw}`} className="tag-chip">
+                            {kw}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 16 }}>
+                      <div style={{ fontWeight: 800, fontSize: 16 }}>Research Gaps</div>
+                      <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+                        {doc.research_gaps && doc.research_gaps.length > 0 ? (
+                          doc.research_gaps.map((gap, idx) => (
+                            <div
+                              key={`${doc.filename}-gap-${idx}`}
+                              className="feature-card"
+                              style={{
+                                padding: 14,
+                                borderLeft: "5px solid #a78bfa",
+                              }}
+                            >
+                              <div style={{ color: "var(--muted)", lineHeight: 1.7 }}>
+                                {gap}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="section-subtitle" style={{ margin: 0 }}>
+                            No strong research gaps detected.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        marginTop: 16,
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 12,
+                      }}
+                    >
+                      <div className="soft-card" style={{ padding: 14 }}>
+                        <div className="stat-label">Words</div>
+                        <div style={{ fontWeight: 800, fontSize: 20, marginTop: 6 }}>
+                          {doc.stats.word_count}
+                        </div>
+                      </div>
+
+                      <div className="soft-card" style={{ padding: 14 }}>
+                        <div className="stat-label">Sentences</div>
+                        <div style={{ fontWeight: 800, fontSize: 20, marginTop: 6 }}>
+                          {doc.stats.sentence_count}
+                        </div>
+                      </div>
+
+                      <div className="soft-card" style={{ padding: 14 }}>
+                        <div className="stat-label">Avg Sentence Len</div>
+                        <div style={{ fontWeight: 800, fontSize: 20, marginTop: 6 }}>
+                          {doc.stats.avg_sentence_len}
+                        </div>
+                      </div>
+
+                      <div className="soft-card" style={{ padding: 14 }}>
+                        <div className="stat-label">Vocab Diversity</div>
+                        <div style={{ fontWeight: 800, fontSize: 20, marginTop: 6 }}>
+                          {doc.stats.vocab_diversity}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 ))}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ResponsiveContainer,
@@ -66,6 +66,14 @@ type UploadResponse = {
     keyword: string;
     count: number;
   }[];
+  research_gaps?: string[];
+  chunks_indexed?: number;
+  detail?: string;
+};
+
+type AskResponse = {
+  answer?: string;
+  citations?: string[];
   detail?: string;
 };
 
@@ -122,11 +130,13 @@ type StoredPaper = {
     keyword: string;
     count: number;
   }[];
+  research_gaps: string[];
 };
 
 const NAV_ITEMS = [
   { id: "overview", label: "Overview" },
   { id: "charts", label: "Charts" },
+  { id: "research-gaps", label: "Research Gaps" },
   { id: "history", label: "History" },
   { id: "sections", label: "Sections" },
   { id: "completeness", label: "Checklist" },
@@ -157,9 +167,11 @@ export default function UploadPage() {
   const [sentiment, setSentiment] = useState<StoredPaper["sentiment"] | null>(null);
   const [scoreTrends, setScoreTrends] = useState<StoredPaper["score_trends"]>([]);
   const [keywordFrequency, setKeywordFrequency] = useState<StoredPaper["keyword_frequency"]>([]);
+  const [researchGaps, setResearchGaps] = useState<string[]>([]);
 
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
+  const [citations, setCitations] = useState<string[]>([]);
   const [asking, setAsking] = useState(false);
   const [hasPaper, setHasPaper] = useState(false);
   const [chatHistory, setChatHistory] = useState<ChatItem[]>([]);
@@ -182,6 +194,7 @@ export default function UploadPage() {
         setSentiment(parsed.sentiment || null);
         setScoreTrends(parsed.score_trends || []);
         setKeywordFrequency(parsed.keyword_frequency || []);
+        setResearchGaps(parsed.research_gaps || []);
         setHasPaper(true);
       } catch {
         localStorage.removeItem("uploadedPaper");
@@ -192,17 +205,16 @@ export default function UploadPage() {
   }, []);
 
   useEffect(() => {
-    const ids = NAV_ITEMS.map((item) => item.id);
     const observers: IntersectionObserver[] = [];
 
-    ids.forEach((id) => {
-      const el = document.getElementById(id);
+    NAV_ITEMS.forEach((item) => {
+      const el = document.getElementById(item.id);
       if (!el) return;
 
       const observer = new IntersectionObserver(
         ([entry]) => {
           if (entry.isIntersecting) {
-            setActiveSection(id);
+            setActiveSection(item.id);
           }
         },
         {
@@ -227,6 +239,7 @@ export default function UploadPage() {
     completeness,
     longSentences,
     vocabSuggestions,
+    researchGaps,
     chatHistory,
   ]);
 
@@ -267,6 +280,7 @@ export default function UploadPage() {
     setMessage("");
     setPreview("");
     setAnswer("");
+    setCitations([]);
     setTitle("");
     setSummary("");
     setKeywords([]);
@@ -279,6 +293,7 @@ export default function UploadPage() {
     setSentiment(null);
     setScoreTrends([]);
     setKeywordFrequency([]);
+    setResearchGaps([]);
 
     try {
       const formData = new FormData();
@@ -327,6 +342,7 @@ export default function UploadPage() {
         sentiment: data.sentiment || { polarity: 0, label: "Neutral" },
         score_trends: data.score_trends || [],
         keyword_frequency: data.keyword_frequency || [],
+        research_gaps: data.research_gaps || [],
       };
 
       setMessage(data.message || "File uploaded successfully.");
@@ -343,6 +359,7 @@ export default function UploadPage() {
       setSentiment(safeData.sentiment);
       setScoreTrends(safeData.score_trends);
       setKeywordFrequency(safeData.keyword_frequency);
+      setResearchGaps(safeData.research_gaps);
       setHasPaper(true);
 
       localStorage.setItem("uploadedPaper", JSON.stringify(safeData));
@@ -359,16 +376,19 @@ export default function UploadPage() {
 
     if (!hasPaper) {
       setAnswer("Please upload a paper first.");
+      setCitations([]);
       return;
     }
 
     if (!finalQuestion) {
       setAnswer("Please enter a question.");
+      setCitations([]);
       return;
     }
 
     setAsking(true);
     setAnswer("");
+    setCitations([]);
 
     try {
       const res = await fetch("http://127.0.0.1:8000/ask", {
@@ -379,18 +399,21 @@ export default function UploadPage() {
         body: JSON.stringify({ question: finalQuestion }),
       });
 
-      const data = await res.json();
+      const data: AskResponse = await res.json();
 
       if (!res.ok) {
         setAnswer(data.detail || "AI request failed.");
+        setCitations([]);
         return;
       }
 
       setAnswer(data.answer || "No answer returned.");
+      setCitations(data.citations || []);
       setQuestion("");
       fetchHistory();
     } catch {
       setAnswer("Could not connect to backend. Restart FastAPI and try again.");
+      setCitations([]);
     } finally {
       setAsking(false);
     }
@@ -443,21 +466,15 @@ export default function UploadPage() {
   const scoreCard = (label: string, value: number | undefined, helper?: string) => (
     <div className="feature-card" style={{ padding: 22 }}>
       <p className="stat-label">{label}</p>
-      <div className="stat-value" style={{ fontSize: 28 }}>
-        {value ?? 0}
-      </div>
-      {helper ? (
-        <p style={{ marginTop: 8, color: "var(--muted)", fontSize: 13 }}>{helper}</p>
-      ) : null}
+      <div className="stat-value" style={{ fontSize: 28 }}>{value ?? 0}</div>
+      {helper ? <p style={{ marginTop: 8, color: "var(--muted)", fontSize: 13 }}>{helper}</p> : null}
     </div>
   );
 
   const statCard = (label: string, value: string | number | undefined) => (
     <div className="feature-card" style={{ padding: 22 }}>
       <p className="stat-label">{label}</p>
-      <div className="stat-value" style={{ fontSize: 22 }}>
-        {value ?? 0}
-      </div>
+      <div className="stat-value" style={{ fontSize: 22 }}>{value ?? 0}</div>
     </div>
   );
 
@@ -607,11 +624,7 @@ export default function UploadPage() {
             </aside>
 
             <div style={{ minWidth: 0 }}>
-              <div
-                className="glass-card"
-                style={{ padding: 30 }}
-                id="overview"
-              >
+              <div className="glass-card" style={{ padding: 30 }} id="overview">
                 <h2 className="section-title">Upload PDF</h2>
                 <p className="section-subtitle" style={{ marginTop: 10 }}>
                   Choose a PDF and run the full document analysis.
@@ -653,10 +666,7 @@ export default function UploadPage() {
                 </div>
               </div>
 
-              <div
-                className="glass-card"
-                style={{ padding: 30, marginTop: 24 }}
-              >
+              <div className="glass-card" style={{ padding: 30, marginTop: 24 }}>
                 <h2 className="section-title">Ask AI</h2>
                 <p className="section-subtitle" style={{ marginTop: 10 }}>
                   Ask focused questions and get cleaner answers from the uploaded paper.
@@ -762,11 +772,7 @@ export default function UploadPage() {
                     {statCard("Complex Word Ratio", stats?.complex_word_ratio)}
                   </div>
 
-                  <div
-                    className="grid-2"
-                    style={{ marginTop: 28, alignItems: "start" }}
-                    id="charts"
-                  >
+                  <div className="grid-2" style={{ marginTop: 28, alignItems: "start" }} id="charts">
                     <div className="glass-card" style={{ padding: 30 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
                         <h2 className="section-title">Auto Summary</h2>
@@ -791,294 +797,260 @@ export default function UploadPage() {
                     </div>
 
                     <div className="glass-card" style={{ padding: 30 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-                        <h2 className="section-title">AI Answer</h2>
-                        <button className="secondary-btn" onClick={copyAnswer}>
-                          Copy Answer
-                        </button>
-                      </div>
-                      <div className="preview-box" style={{ marginTop: 18, minHeight: 220 }}>
-                        {asking ? "Thinking..." : answer || "Your AI answer will appear here."}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid-2" style={{ marginTop: 28, alignItems: "start" }}>
-                    <div className="glass-card" style={{ padding: 30 }}>
                       <h2 className="section-title">Score Radar</h2>
-                      {chartData.length > 0 ? (
-                        <div style={{ width: "100%", height: 360, marginTop: 16 }}>
+                      <div style={{ width: "100%", height: 320, marginTop: 20 }}>
+                        {chartData.length > 0 ? (
                           <ResponsiveContainer width="100%" height="100%">
                             <RadarChart data={chartData}>
                               <PolarGrid />
                               <PolarAngleAxis dataKey="name" />
-                              <Radar dataKey="value" fill="rgba(167,139,250,0.45)" stroke="rgba(139,92,246,1)" />
+                              <Radar
+                                name="Score"
+                                dataKey="value"
+                                stroke="#8b5cf6"
+                                fill="#8b5cf6"
+                                fillOpacity={0.35}
+                              />
                             </RadarChart>
                           </ResponsiveContainer>
-                        </div>
-                      ) : (
-                        <div className="empty-state" style={{ marginTop: 18 }}>
-                          <div>
-                            <h3 className="empty-state-title">No score chart yet</h3>
-                            <p className="empty-state-text">Upload a PDF to generate the score radar.</p>
-                          </div>
-                        </div>
-                      )}
+                        ) : (
+                          <div className="preview-box">Upload a paper to see score chart.</div>
+                        )}
+                      </div>
                     </div>
+                  </div>
 
-                    <div className="glass-card" style={{ padding: 30 }}>
-                      <h2 className="section-title">Keyword Frequency Chart</h2>
+                  <div className="glass-card" style={{ padding: 30, marginTop: 28 }}>
+                    <h2 className="section-title">Keyword Frequency</h2>
+                    <div style={{ width: "100%", height: 320, marginTop: 20 }}>
                       {keywordChartData.length > 0 ? (
-                        <div style={{ width: "100%", height: 360, marginTop: 16 }}>
-                          <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={keywordChartData}>
-                              <CartesianGrid strokeDasharray="3 3" />
-                              <XAxis dataKey="name" angle={-18} textAnchor="end" interval={0} height={70} />
-                              <YAxis />
-                              <Tooltip />
-                              <Bar dataKey="count" fill="rgba(96,165,250,0.85)" radius={[8, 8, 0, 0]} />
-                            </BarChart>
-                          </ResponsiveContainer>
-                        </div>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={keywordChartData}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="name" />
+                            <YAxis />
+                            <Tooltip />
+                            <Bar dataKey="count" fill="#a78bfa" radius={[8, 8, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
                       ) : (
-                        <div className="empty-state" style={{ marginTop: 18 }}>
-                          <div>
-                            <h3 className="empty-state-title">No keyword chart yet</h3>
-                            <p className="empty-state-text">Upload a PDF to generate keyword frequency bars.</p>
-                          </div>
-                        </div>
+                        <div className="preview-box">Upload a paper to see keyword chart.</div>
                       )}
                     </div>
                   </div>
 
-                  <div
-                    className="glass-card"
-                    style={{ marginTop: 28, padding: 30 }}
-                    id="history"
-                  >
-                    <h2 className="section-title">Recent Question History</h2>
-                    {chatHistory.length > 0 ? (
-                      <div style={{ marginTop: 18, display: "grid", gap: 16 }}>
-                        {chatHistory.map((item, index) => (
-                          <div key={item.id || index} className="feature-card" style={{ padding: 22 }}>
-                            <p className="stat-label">Question</p>
-                            <p style={{ marginTop: 10, fontWeight: 700, overflowWrap: "anywhere" }}>{item.question}</p>
-                            <p className="stat-label" style={{ marginTop: 16 }}>Answer</p>
-                            <p style={{ marginTop: 10, lineHeight: 1.8, overflowWrap: "anywhere" }}>{item.answer}</p>
+                  <div id="research-gaps" className="glass-card" style={{ padding: 30, marginTop: 28 }}>
+                    <h2 className="section-title">Research Gap Detection</h2>
+                    <p className="section-subtitle" style={{ marginTop: 10 }}>
+                      AI-generated signals showing what may be missing or underexplored in the paper.
+                    </p>
+
+                    <div style={{ marginTop: 20, display: "grid", gap: 14 }}>
+                      {researchGaps.length > 0 ? (
+                        researchGaps.map((gap, index) => (
+                          <div
+                            key={index}
+                            className="feature-card"
+                            style={{
+                              padding: 18,
+                              borderLeft: "6px solid #a78bfa",
+                            }}
+                          >
+                            <div style={{ fontWeight: 700, fontSize: 16 }}>Gap {index + 1}</div>
+                            <p style={{ marginTop: 10, color: "var(--muted)", lineHeight: 1.8 }}>
+                              {gap}
+                            </p>
                           </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="empty-state" style={{ marginTop: 18 }}>
-                        <div>
-                          <h3 className="empty-state-title">No question history yet</h3>
-                          <p className="empty-state-text">
-                            Ask a few questions and they will appear here.
-                          </p>
-                        </div>
-                      </div>
-                    )}
+                        ))
+                      ) : (
+                        <p className="section-subtitle" style={{ margin: 0 }}>
+                          Upload a paper to detect possible research gaps.
+                        </p>
+                      )}
+                    </div>
                   </div>
 
-                  <div
-                    className="glass-card"
-                    style={{ marginTop: 28, padding: 30 }}
-                    id="sections"
-                  >
+                  <div className="glass-card" style={{ padding: 30, marginTop: 28 }} id="history">
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center" }}>
+                      <h2 className="section-title">Latest AI Answer</h2>
+                      {answer && (
+                        <button className="secondary-btn" onClick={copyAnswer}>
+                          Copy Answer
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="feature-card" style={{ marginTop: 18, padding: 22 }}>
+                      <div style={{ fontWeight: 800, fontSize: 18 }}>AI Response</div>
+                      <div
+                        style={{
+                          marginTop: 14,
+                          whiteSpace: "pre-wrap",
+                          lineHeight: 1.9,
+                          color: "var(--text)",
+                        }}
+                      >
+                        {answer || "Ask a question to see the answer here."}
+                      </div>
+                    </div>
+
+                    <div className="glass-card" style={{ marginTop: 18, padding: 22 }}>
+                      <div style={{ fontWeight: 800, fontSize: 18 }}>Citations</div>
+                      <div style={{ marginTop: 14, display: "flex", flexWrap: "wrap", gap: 12 }}>
+                        {citations.length > 0 ? (
+                          citations.map((citation, index) => (
+                            <span
+                              key={`${citation}-${index}`}
+                              className="tag-chip"
+                              style={{
+                                background: "rgba(167,139,250,0.12)",
+                                border: "1px solid rgba(167,139,250,0.25)",
+                              }}
+                            >
+                              {citation}
+                            </span>
+                          ))
+                        ) : (
+                          <p className="section-subtitle" style={{ margin: 0 }}>
+                            No citations yet.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <h3 style={{ marginTop: 26, fontSize: 24 }}>Chat History</h3>
+                    <div style={{ marginTop: 16, display: "grid", gap: 14 }}>
+                      {chatHistory.length > 0 ? (
+                        chatHistory.map((item, index) => (
+                          <div key={item.id || index} className="feature-card" style={{ padding: 20 }}>
+                            <div style={{ fontWeight: 800, fontSize: 17 }}>Q: {item.question}</div>
+                            <p
+                              style={{
+                                marginTop: 10,
+                                color: "var(--muted)",
+                                lineHeight: 1.8,
+                                whiteSpace: "pre-wrap",
+                              }}
+                            >
+                              {item.answer}
+                            </p>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="section-subtitle" style={{ margin: 0 }}>
+                          No chat history yet.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="glass-card" style={{ padding: 30, marginTop: 28 }} id="sections">
                     <h2 className="section-title">Section Summaries</h2>
-                    {Object.keys(sections).length > 0 ? (
-                      <div style={{ marginTop: 18, display: "grid", gap: 16 }}>
-                        {Object.entries(sections).map(([sectionTitle, sectionSummary]) => (
-                          <div key={sectionTitle} className="feature-card" style={{ padding: 22 }}>
-                            <p className="stat-label">{sectionTitle}</p>
-                            <p style={{ marginTop: 10, lineHeight: 1.8, overflowWrap: "anywhere" }}>{sectionSummary}</p>
+                    <div style={{ marginTop: 20, display: "grid", gap: 16 }}>
+                      {Object.keys(sections).length > 0 ? (
+                        Object.entries(sections).map(([sectionName, sectionSummary]) => (
+                          <div key={sectionName} className="feature-card" style={{ padding: 20 }}>
+                            <div style={{ fontWeight: 800, fontSize: 18 }}>{sectionName}</div>
+                            <p style={{ marginTop: 10, color: "var(--muted)", lineHeight: 1.8 }}>
+                              {sectionSummary}
+                            </p>
                           </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="empty-state" style={{ marginTop: 18 }}>
-                        <div>
-                          <h3 className="empty-state-title">No section summaries yet</h3>
-                          <p className="empty-state-text">
-                            Upload a PDF and section summaries will appear here.
-                          </p>
-                        </div>
-                      </div>
-                    )}
+                        ))
+                      ) : (
+                        <p className="section-subtitle" style={{ margin: 0 }}>
+                          No sections yet.
+                        </p>
+                      )}
+                    </div>
                   </div>
 
-                  <div
-                    className="glass-card"
-                    style={{ marginTop: 28, padding: 30 }}
-                    id="completeness"
-                  >
-                    <h2 className="section-title">Section Completeness Check</h2>
-                    {Object.keys(completeness).length > 0 ? (
-                      <div style={{ marginTop: 18, display: "grid", gap: 18 }}>
-                        {Object.entries(completeness).map(([sectionName, criteria]) => (
-                          <div key={sectionName} className="feature-card" style={{ padding: 22 }}>
-                            <h3 style={{ margin: 0, fontSize: 22 }}>{sectionName}</h3>
-                            <div style={{ display: "grid", gap: 12, marginTop: 14 }}>
+                  <div className="glass-card" style={{ padding: 30, marginTop: 28 }} id="completeness">
+                    <h2 className="section-title">Section Completeness Checklist</h2>
+                    <div style={{ marginTop: 20, display: "grid", gap: 16 }}>
+                      {Object.keys(completeness).length > 0 ? (
+                        Object.entries(completeness).map(([sectionName, criteria]) => (
+                          <div key={sectionName} className="feature-card" style={{ padding: 20 }}>
+                            <div style={{ fontWeight: 800, fontSize: 18 }}>{sectionName}</div>
+                            <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
                               {Object.entries(criteria).map(([criterion, status]) => (
                                 <div
                                   key={criterion}
                                   style={{
                                     display: "flex",
                                     justifyContent: "space-between",
+                                    gap: 16,
                                     alignItems: "center",
-                                    gap: 12,
-                                    padding: "12px 0",
-                                    borderBottom: "1px solid var(--border)",
                                     flexWrap: "wrap",
                                   }}
                                 >
-                                  <span style={{ fontWeight: 600 }}>{criterion}</span>
+                                  <div style={{ color: "var(--muted)" }}>{criterion}</div>
                                   {statusPill(status)}
                                 </div>
                               ))}
                             </div>
                           </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="empty-state" style={{ marginTop: 18 }}>
-                        <div>
-                          <h3 className="empty-state-title">No completeness data yet</h3>
-                          <p className="empty-state-text">
-                            Upload a PDF and checklist results will appear here.
-                          </p>
-                        </div>
-                      </div>
-                    )}
+                        ))
+                      ) : (
+                        <p className="section-subtitle" style={{ margin: 0 }}>
+                          Upload a paper to view completeness analysis.
+                        </p>
+                      )}
+                    </div>
                   </div>
 
-                  <div
-                    className="glass-card"
-                    style={{ marginTop: 28, padding: 30 }}
-                    id="long-sentences"
-                  >
-                    <h2 className="section-title">Long Sentence Detection</h2>
-                    {longSentences.length > 0 ? (
-                      <div style={{ marginTop: 18, display: "grid", gap: 16 }}>
-                        {longSentences.map((item, index) => (
-                          <div
-                            key={index}
-                            className="feature-card"
-                            style={{
-                              padding: 20,
-                              maxHeight: 320,
-                              overflowY: "auto",
-                            }}
-                          >
-                            <p className="stat-label">Sentence ({item.word_count} words)</p>
-                            <p
-                              style={{
-                                marginTop: 10,
-                                lineHeight: 1.8,
-                                overflowWrap: "anywhere",
-                                wordBreak: "break-word",
-                                whiteSpace: "pre-wrap",
-                              }}
-                            >
-                              {item.sentence}
-                            </p>
-                            <p style={{ marginTop: 10, color: "var(--muted)", fontStyle: "italic" }}>
-                              {item.suggestion}
+                  <div className="glass-card" style={{ padding: 30, marginTop: 28 }} id="long-sentences">
+                    <h2 className="section-title">Long Sentence Issues</h2>
+                    <div style={{ marginTop: 20, display: "grid", gap: 16 }}>
+                      {longSentences.length > 0 ? (
+                        longSentences.map((item, index) => (
+                          <div key={index} className="feature-card" style={{ padding: 20 }}>
+                            <div style={{ fontWeight: 800 }}>Sentence ({item.word_count} words)</div>
+                            <p style={{ marginTop: 10, lineHeight: 1.8 }}>{item.sentence}</p>
+                            <p style={{ marginTop: 10, color: "var(--muted)" }}>
+                              Suggestion: {item.suggestion}
                             </p>
                           </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="empty-state" style={{ marginTop: 18 }}>
-                        <div>
-                          <h3 className="empty-state-title">No long sentence issues found</h3>
-                          <p className="empty-state-text">
-                            Your document looks clean in this check.
-                          </p>
-                        </div>
-                      </div>
-                    )}
+                        ))
+                      ) : (
+                        <p className="section-subtitle" style={{ margin: 0 }}>
+                          No long sentence issues found.
+                        </p>
+                      )}
+                    </div>
                   </div>
 
-                  <div
-                    className="glass-card"
-                    style={{ marginTop: 28, padding: 30 }}
-                    id="vocab"
-                  >
+                  <div className="glass-card" style={{ padding: 30, marginTop: 28 }} id="vocab">
                     <h2 className="section-title">Vocabulary Suggestions</h2>
-                    {vocabSuggestions.length > 0 ? (
-                      <div style={{ marginTop: 18, display: "grid", gap: 16 }}>
-                        {vocabSuggestions.map((item, index) => (
-                          <div
-                            key={index}
-                            className="feature-card"
-                            style={{
-                              padding: 20,
-                              overflowWrap: "anywhere",
-                              wordBreak: "break-word",
-                            }}
-                          >
-                            <p className="stat-label">Found in: {item.location}</p>
-                            <p style={{ marginTop: 10, lineHeight: 1.8 }}>
-                              Replace <b>“{item.weak}”</b> with <b>“{item.better}”</b>
+                    <div style={{ marginTop: 20, display: "grid", gap: 16 }}>
+                      {vocabSuggestions.length > 0 ? (
+                        vocabSuggestions.map((item, index) => (
+                          <div key={index} className="feature-card" style={{ padding: 20 }}>
+                            <div style={{ fontWeight: 800 }}>
+                              Replace "{item.weak}" → "{item.better}"
+                            </div>
+                            <p style={{ marginTop: 10, color: "var(--muted)" }}>
+                              Location: {item.location}
                             </p>
                           </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="empty-state" style={{ marginTop: 18 }}>
-                        <div>
-                          <h3 className="empty-state-title">No weak vocabulary flagged</h3>
-                          <p className="empty-state-text">
-                            Your wording looks strong in this pass.
-                          </p>
-                        </div>
-                      </div>
-                    )}
+                        ))
+                      ) : (
+                        <p className="section-subtitle" style={{ margin: 0 }}>
+                          No vocabulary suggestions found.
+                        </p>
+                      )}
+                    </div>
                   </div>
 
-                  <div
-                    className="glass-card"
-                    style={{ marginTop: 28, padding: 30 }}
-                    id="preview"
-                  >
-                    <h2 className="section-title">Extracted Preview</h2>
-                    {preview ? (
-                      <div
-                        className="preview-box"
-                        style={{
-                          marginTop: 18,
-                          minHeight: 280,
-                          maxHeight: 500,
-                          overflowY: "auto",
-                          overflowWrap: "anywhere",
-                          wordBreak: "break-word",
-                          whiteSpace: "pre-wrap",
-                        }}
-                      >
-                        {preview}
-                      </div>
-                    ) : (
-                      <div className="empty-state" style={{ marginTop: 18 }}>
-                        <div>
-                          <h3 className="empty-state-title">Nothing uploaded yet</h3>
-                          <p className="empty-state-text">
-                            Upload a PDF and the preview will appear here with analytics-ready content.
-                          </p>
-                        </div>
-                      </div>
-                    )}
+                  <div className="glass-card" style={{ padding: 30, marginTop: 28 }} id="preview">
+                    <h2 className="section-title">Document Preview</h2>
+                    <div className="preview-box" style={{ marginTop: 18, minHeight: 320 }}>
+                      {preview || "Upload a paper to view extracted preview text."}
+                    </div>
                   </div>
                 </>
               )}
             </div>
           </div>
-
-          <div
-            style={{
-              display: "none",
-            }}
-          />
         </div>
       </main>
     </ThemeProvider>

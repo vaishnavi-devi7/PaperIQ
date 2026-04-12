@@ -1,21 +1,23 @@
 import os
 import re
 from collections import Counter
-from typing import Dict, List, Tuple
 from io import BytesIO
+from typing import Dict, List, Tuple
 
 import pdfplumber
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fpdf import FPDF
 from huggingface_hub import InferenceClient
 from sqlalchemy.orm import Session
 
-from app.db.database import Base, engine, SessionLocal
-from app.models.history import PaperHistory, ChatHistory
+from app.db.database import Base, SessionLocal, engine
+from app.models.history import ChatHistory, PaperHistory
 from app.routes.auth import router as auth_router
+from app.services.chunking_service import chunk_text
+from app.services.retrieval_service import VectorStore
 
 load_dotenv()
 
@@ -37,7 +39,7 @@ app.include_router(auth_router)
 
 stored_text = ""
 stored_filename = "paperiq_document.pdf"
-
+vector_store = VectorStore()
 
 SECTION_CHECKLIST = {
     "Introduction": {
@@ -95,15 +97,49 @@ SUGGESTIONS_MAP = {
 }
 
 POSITIVE_WORDS = {
-    "effective", "improved", "success", "strong", "efficient", "robust", "beneficial",
-    "significant", "accurate", "novel", "advantage", "better", "reliable", "positive",
-    "promising", "valuable", "useful", "clear", "efficiently", "improvement"
+    "effective",
+    "improved",
+    "success",
+    "strong",
+    "efficient",
+    "robust",
+    "beneficial",
+    "significant",
+    "accurate",
+    "novel",
+    "advantage",
+    "better",
+    "reliable",
+    "positive",
+    "promising",
+    "valuable",
+    "useful",
+    "clear",
+    "efficiently",
+    "improvement",
 }
 
 NEGATIVE_WORDS = {
-    "limited", "problem", "issue", "weak", "difficult", "challenge", "poor",
-    "negative", "error", "risk", "unclear", "lack", "fails", "failure",
-    "constraint", "limitations", "limitation", "hard", "bias", "complex"
+    "limited",
+    "problem",
+    "issue",
+    "weak",
+    "difficult",
+    "challenge",
+    "poor",
+    "negative",
+    "error",
+    "risk",
+    "unclear",
+    "lack",
+    "fails",
+    "failure",
+    "constraint",
+    "limitations",
+    "limitation",
+    "hard",
+    "bias",
+    "complex",
 }
 
 
@@ -177,15 +213,78 @@ def extract_summary(text: str) -> str:
 
 def extract_keywords(text: str, top_n: int = 10) -> List[str]:
     stop_words = {
-        "this", "that", "with", "from", "have", "your", "will", "were", "been",
-        "about", "their", "which", "there", "would", "could", "should", "while",
-        "paper", "document", "using", "used", "into", "than", "then", "them",
-        "they", "also", "such", "through", "where", "when", "what", "who",
-        "why", "how", "and", "the", "for", "are", "was", "you", "its", "profile",
-        "professional", "experience", "results", "method", "methods", "study",
-        "research", "analysis", "based", "between", "after", "before", "being",
-        "been", "into", "our", "we", "can", "may", "not", "has", "had", "does",
-        "did", "these", "those", "over", "under", "more", "most", "some"
+        "this",
+        "that",
+        "with",
+        "from",
+        "have",
+        "your",
+        "will",
+        "were",
+        "been",
+        "about",
+        "their",
+        "which",
+        "there",
+        "would",
+        "could",
+        "should",
+        "while",
+        "paper",
+        "document",
+        "using",
+        "used",
+        "into",
+        "than",
+        "then",
+        "them",
+        "they",
+        "also",
+        "such",
+        "through",
+        "where",
+        "when",
+        "what",
+        "who",
+        "why",
+        "how",
+        "and",
+        "the",
+        "for",
+        "are",
+        "was",
+        "you",
+        "its",
+        "profile",
+        "professional",
+        "experience",
+        "results",
+        "method",
+        "methods",
+        "study",
+        "research",
+        "analysis",
+        "based",
+        "between",
+        "after",
+        "before",
+        "being",
+        "our",
+        "we",
+        "can",
+        "may",
+        "not",
+        "has",
+        "had",
+        "does",
+        "did",
+        "these",
+        "those",
+        "over",
+        "under",
+        "more",
+        "most",
+        "some",
     }
 
     words = [
@@ -205,16 +304,20 @@ def extract_sections(text: str) -> Tuple[Dict[str, str], Dict[str, str]]:
     sections_raw[current_header] = []
 
     common_headers = {
-        "abstract", "introduction", "literature review", "methodology",
-        "methods", "results", "discussion", "conclusion", "references"
+        "abstract",
+        "introduction",
+        "literature review",
+        "methodology",
+        "methods",
+        "results",
+        "discussion",
+        "conclusion",
+        "references",
     }
 
     for line in lines:
         is_numbered_header = bool(re.match(r"^\d+(\.\d+)*\s+[A-Za-z].{0,60}$", line))
-        is_plain_header = (
-            line.lower() in common_headers
-            or (line.isupper() and 3 < len(line) < 50)
-        )
+        is_plain_header = line.lower() in common_headers or (line.isupper() and 3 < len(line) < 50)
 
         if is_numbered_header or is_plain_header:
             current_header = line
@@ -277,15 +380,21 @@ def find_long_sentences(text: str, threshold: int = 30) -> List[Dict[str, str]]:
         words = extract_words(sentence)
         if len(words) > threshold:
             suggestion = "Consider splitting this sentence into 2 shorter ones."
-            match = re.search(r"\b(however|therefore|although|because|which|that|and|but)\b", sentence, re.IGNORECASE)
+            match = re.search(
+                r"\b(however|therefore|although|because|which|that|and|but)\b",
+                sentence,
+                re.IGNORECASE,
+            )
             if match:
                 suggestion = f"Consider splitting around “{match.group(1)}”."
 
-            results.append({
-                "sentence": sentence,
-                "word_count": str(len(words)),
-                "suggestion": suggestion,
-            })
+            results.append(
+                {
+                    "sentence": sentence,
+                    "word_count": str(len(words)),
+                    "suggestion": suggestion,
+                }
+            )
 
     return results[:12]
 
@@ -301,11 +410,13 @@ def find_vocab_suggestions(text: str, sections_raw: Dict[str, str]) -> List[Dict
                 if weak in sec_text.lower():
                     found_in.append(sec_name)
 
-            findings.append({
-                "weak": weak,
-                "better": better,
-                "location": ", ".join(found_in) if found_in else "Document"
-            })
+            findings.append(
+                {
+                    "weak": weak,
+                    "better": better,
+                    "location": ", ".join(found_in) if found_in else "Document",
+                }
+            )
 
     unique = []
     seen = set()
@@ -316,32 +427,6 @@ def find_vocab_suggestions(text: str, sections_raw: Dict[str, str]) -> List[Dict
             unique.append(item)
 
     return unique[:20]
-
-
-def find_relevant_sentences(question: str, text: str, max_results: int = 4) -> List[str]:
-    question_words = {w.lower() for w in extract_words(question) if len(w) > 2}
-    if not question_words:
-        return []
-
-    sentence_scores = []
-    for sentence in split_sentences(text):
-        sent_words = {w.lower() for w in extract_words(sentence)}
-        overlap = len(question_words & sent_words)
-        if overlap > 0:
-            sentence_scores.append((overlap, sentence))
-
-    sentence_scores.sort(key=lambda x: x[0], reverse=True)
-
-    unique_sentences = []
-    seen = set()
-    for _, sentence in sentence_scores:
-        if sentence not in seen:
-            seen.add(sentence)
-            unique_sentences.append(sentence)
-        if len(unique_sentences) >= max_results:
-            break
-
-    return unique_sentences
 
 
 def analyze_sentiment(text: str) -> Dict[str, float]:
@@ -372,13 +457,58 @@ def build_score_trends(scores: Dict[str, float]) -> List[Dict[str, float]]:
 
 def build_keyword_frequency(text: str, top_n: int = 8) -> List[Dict[str, int]]:
     stop_words = {
-        "this", "that", "with", "from", "have", "your", "will", "were", "been",
-        "about", "their", "which", "there", "would", "could", "should", "while",
-        "paper", "document", "using", "used", "into", "than", "then", "them",
-        "they", "also", "such", "through", "where", "when", "what", "who",
-        "why", "how", "and", "the", "for", "are", "was", "you", "its", "profile",
-        "professional", "experience", "results", "method", "methods", "study",
-        "research", "analysis", "based"
+        "this",
+        "that",
+        "with",
+        "from",
+        "have",
+        "your",
+        "will",
+        "were",
+        "been",
+        "about",
+        "their",
+        "which",
+        "there",
+        "would",
+        "could",
+        "should",
+        "while",
+        "paper",
+        "document",
+        "using",
+        "used",
+        "into",
+        "than",
+        "then",
+        "them",
+        "they",
+        "also",
+        "such",
+        "through",
+        "where",
+        "when",
+        "what",
+        "who",
+        "why",
+        "how",
+        "and",
+        "the",
+        "for",
+        "are",
+        "was",
+        "you",
+        "its",
+        "profile",
+        "professional",
+        "experience",
+        "results",
+        "method",
+        "methods",
+        "study",
+        "research",
+        "analysis",
+        "based",
     }
 
     words = [
@@ -388,6 +518,71 @@ def build_keyword_frequency(text: str, top_n: int = 8) -> List[Dict[str, int]]:
     ]
     freq = Counter(words)
     return [{"keyword": word, "count": count} for word, count in freq.most_common(top_n)]
+
+
+def detect_research_gaps(sections_raw: Dict[str, str], full_text: str) -> List[str]:
+    gaps: List[str] = []
+
+    mapped = normalize_section_lookup(sections_raw)
+
+    intro_text = mapped.get("Introduction", "").lower()
+    method_text = mapped.get("Methodology", "").lower()
+    conclusion_text = mapped.get("Conclusion", "").lower()
+    full_text_lower = full_text.lower()
+
+    dataset_keywords = ["dataset", "data collected", "benchmark", "corpus", "samples", "training data"]
+    metric_keywords = ["accuracy", "precision", "recall", "f1", "auc", "evaluation", "metric"]
+    baseline_keywords = [
+        "baseline",
+        "compared with",
+        "comparison",
+        "state-of-the-art",
+        "existing methods",
+        "prior work",
+        "versus",
+        "outperforms",
+    ]
+    limitation_keywords = [
+        "limitation",
+        "limitations",
+        "future work",
+        "future scope",
+        "can be improved",
+        "further work",
+        "next step",
+    ]
+    real_world_keywords = ["real-world", "practical", "deployment", "industry", "production", "applied setting"]
+    sample_size_keywords = ["sample size", "participants", "subjects", "observations", "instances"]
+
+    if not any(keyword in method_text for keyword in dataset_keywords):
+        gaps.append("Limited or missing dataset description.")
+
+    if not any(keyword in method_text or keyword in full_text_lower for keyword in metric_keywords):
+        gaps.append("Evaluation metrics are weak or not clearly described.")
+
+    if not any(keyword in full_text_lower for keyword in baseline_keywords):
+        gaps.append("No strong baseline or comparison terms detected.")
+
+    if not any(keyword in conclusion_text or keyword in full_text_lower for keyword in limitation_keywords):
+        gaps.append("Future work or limitations are not clearly discussed.")
+
+    if not any(keyword in full_text_lower for keyword in real_world_keywords):
+        gaps.append("Real-world applicability or deployment context is not clearly mentioned.")
+
+    if not any(keyword in full_text_lower for keyword in sample_size_keywords):
+        gaps.append("Sample size or scale of experimentation is not clearly stated.")
+
+    if "novel" not in intro_text and "contribution" not in intro_text and "propose" not in intro_text:
+        gaps.append("Core contribution is not strongly framed in the introduction.")
+
+    unique_gaps = []
+    seen = set()
+    for gap in gaps:
+        if gap not in seen:
+            seen.add(gap)
+            unique_gaps.append(gap)
+
+    return unique_gaps[:6]
 
 
 def analyze_document(text: str) -> Dict:
@@ -410,14 +605,29 @@ def analyze_document(text: str) -> Dict:
     readability = round(flesch_reading_ease(text), 2)
 
     transition_words = [
-        "however", "therefore", "thus", "consequently", "furthermore",
-        "moreover", "meanwhile", "additionally", "nevertheless"
+        "however",
+        "therefore",
+        "thus",
+        "consequently",
+        "furthermore",
+        "moreover",
+        "meanwhile",
+        "additionally",
+        "nevertheless",
     ]
     transition_count = sum(text.lower().count(t) for t in transition_words)
 
     reasoning_words = [
-        "because", "since", "implies", "therefore", "due to",
-        "as a result", "evidence", "hence", "suggests", "indicates"
+        "because",
+        "since",
+        "implies",
+        "therefore",
+        "due to",
+        "as a result",
+        "evidence",
+        "hence",
+        "suggests",
+        "indicates",
     ]
     reasoning_count = sum(text.lower().count(w) for w in reasoning_words)
 
@@ -432,7 +642,7 @@ def analyze_document(text: str) -> Dict:
         + (reasoning_score * 0.20)
         + (sophistication_score * 0.17)
         + (readability * 0.15),
-        2
+        2,
     )
 
     scores = {
@@ -451,6 +661,7 @@ def analyze_document(text: str) -> Dict:
     sentiment = analyze_sentiment(text)
     score_trends = build_score_trends(scores)
     keyword_frequency = build_keyword_frequency(text)
+    research_gaps = detect_research_gaps(sections_raw, text)
 
     return {
         "scores": scores,
@@ -459,445 +670,4 @@ def analyze_document(text: str) -> Dict:
             "sentence_count": sentence_count,
             "avg_sentence_len": avg_sentence_len,
             "avg_word_len": avg_word_len,
-            "vocab_diversity": vocab_diversity,
-            "complex_word_ratio": complex_word_ratio,
-        },
-        "sections": sections,
-        "sections_raw": sections_raw,
-        "completeness": completeness,
-        "long_sentences": long_sentences,
-        "vocab_suggestions": vocab_suggestions,
-        "sentiment": sentiment,
-        "score_trends": score_trends,
-        "keyword_frequency": keyword_frequency,
-    }
-
-
-def local_skills_answer(text: str) -> str:
-    skill_keywords = [
-        "python", "java", "javascript", "typescript", "react", "next.js", "nextjs",
-        "fastapi", "sql", "mysql", "postgresql", "machine learning", "data science",
-        "html", "css", "tailwind", "streamlit", "full stack", "ai", "nlp", "git",
-        "github", "aws", "ec2", "s3", "docker", "linux"
-    ]
-
-    text_lower = text.lower()
-    found_skills = [skill for skill in skill_keywords if skill in text_lower]
-
-    if found_skills:
-        pretty = ", ".join(dict.fromkeys(found_skills))
-        return f"Skills found: {pretty}"
-
-    return "No predefined skills were clearly detected in the document."
-
-
-def local_internship_answer(text: str) -> str:
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
-    internship_lines = []
-
-    for line in lines:
-        lower = line.lower()
-        if "intern" in lower or "internship" in lower:
-            internship_lines.append(line)
-
-    internship_lines = list(dict.fromkeys(internship_lines))
-
-    if internship_lines:
-        return "Internships found:\n- " + "\n- ".join(internship_lines[:8])
-
-    return "No internship information was clearly found in the document."
-
-
-def local_email_answer(text: str) -> str:
-    emails = re.findall(r"[\w\.-]+@[\w\.-]+", text)
-    unique_emails = list(dict.fromkeys(emails))
-
-    if unique_emails:
-        return "Emails found: " + ", ".join(unique_emails)
-
-    return "No email found in the document."
-
-
-def local_answer(question: str, text: str) -> str:
-    q = question.lower().strip()
-
-    if "summary" in q or "summarize" in q:
-        return extract_summary(text)
-
-    if "title" in q or "name of the document" in q:
-        return extract_title(text)
-
-    if "keyword" in q:
-        keywords = extract_keywords(text)
-        return "Top keywords: " + ", ".join(keywords) if keywords else "No strong keywords detected."
-
-    if "email" in q:
-        return local_email_answer(text)
-
-    if "skill" in q:
-        return local_skills_answer(text)
-
-    if "intern" in q:
-        return local_internship_answer(text)
-
-    return ""
-
-
-def ask_huggingface(question: str, text: str) -> str:
-    if not HF_API_KEY:
-        return "HF_API_KEY missing in backend/.env"
-
-    client = InferenceClient(
-        provider="auto",
-        api_key=HF_API_KEY,
-        timeout=60,
-    )
-
-    relevant_sentences = find_relevant_sentences(question, text, max_results=5)
-    compact_context = "\n".join(f"- {s}" for s in relevant_sentences) if relevant_sentences else text[:3000]
-
-    system_prompt = (
-        "You are a smart academic document assistant. "
-        "Answer clearly, concisely, and only from the provided document context. "
-        "Do not repeat the entire document. "
-        "Prefer short bullet points when useful. "
-        "If the answer is not clearly present, say that honestly."
-    )
-
-    user_prompt = (
-        f"QUESTION:\n{question}\n\n"
-        f"RELEVANT DOCUMENT CONTEXT:\n{compact_context}\n\n"
-        f"ANSWER:"
-    )
-
-    completion = client.chat_completion(
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        max_tokens=220,
-        temperature=0.25,
-    )
-
-    answer = completion.choices[0].message.content.strip()
-    return answer if answer else "AI couldn't understand. Try rephrasing."
-
-
-def safe_pdf_text(text: str) -> str:
-    return text.encode("latin-1", "replace").decode("latin-1")
-
-
-def create_pdf_report(filename: str, text: str) -> bytes:
-    analytics = analyze_document(text)
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-
-    pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, safe_pdf_text("PaperIQ Analysis Report"), ln=True)
-
-    pdf.set_font("Arial", "", 12)
-    pdf.cell(0, 8, safe_pdf_text(f"Document: {filename}"), ln=True)
-    pdf.ln(4)
-
-    pdf.set_font("Arial", "B", 13)
-    pdf.cell(0, 8, safe_pdf_text("Scores"), ln=True)
-    pdf.set_font("Arial", "", 11)
-    for key, value in analytics["scores"].items():
-        pdf.cell(0, 7, safe_pdf_text(f"{key}: {value}"), ln=True)
-
-    pdf.ln(3)
-    pdf.set_font("Arial", "B", 13)
-    pdf.cell(0, 8, safe_pdf_text("Statistics"), ln=True)
-    pdf.set_font("Arial", "", 11)
-    for key, value in analytics["stats"].items():
-        label = key.replace("_", " ").title()
-        pdf.cell(0, 7, safe_pdf_text(f"{label}: {value}"), ln=True)
-
-    pdf.ln(3)
-    pdf.set_font("Arial", "B", 13)
-    pdf.cell(0, 8, safe_pdf_text("Summary"), ln=True)
-    pdf.set_font("Arial", "", 11)
-    pdf.multi_cell(0, 7, safe_pdf_text(extract_summary(text)))
-
-    pdf.ln(3)
-    pdf.set_font("Arial", "B", 13)
-    pdf.cell(0, 8, safe_pdf_text("Keywords"), ln=True)
-    pdf.set_font("Arial", "", 11)
-    pdf.multi_cell(0, 7, safe_pdf_text(", ".join(extract_keywords(text, top_n=12))))
-
-    pdf.ln(3)
-    pdf.set_font("Arial", "B", 13)
-    pdf.cell(0, 8, safe_pdf_text("Section Summaries"), ln=True)
-    for section_title, section_summary in analytics["sections"].items():
-        pdf.set_font("Arial", "B", 11)
-        pdf.multi_cell(0, 7, safe_pdf_text(section_title))
-        pdf.set_font("Arial", "", 11)
-        pdf.multi_cell(0, 7, safe_pdf_text(section_summary))
-        pdf.ln(1)
-
-    pdf.ln(3)
-    pdf.set_font("Arial", "B", 13)
-    pdf.cell(0, 8, safe_pdf_text("Long Sentence Issues"), ln=True)
-    pdf.set_font("Arial", "", 11)
-    if analytics["long_sentences"]:
-        for item in analytics["long_sentences"][:6]:
-            pdf.multi_cell(0, 7, safe_pdf_text(f"- {item['sentence']}"))
-            pdf.multi_cell(0, 7, safe_pdf_text(f"  Suggestion: {item['suggestion']}"))
-            pdf.ln(1)
-    else:
-        pdf.cell(0, 7, safe_pdf_text("No long sentence issues found."), ln=True)
-
-    pdf.ln(3)
-    pdf.set_font("Arial", "B", 13)
-    pdf.cell(0, 8, safe_pdf_text("Vocabulary Suggestions"), ln=True)
-    pdf.set_font("Arial", "", 11)
-    if analytics["vocab_suggestions"]:
-        for item in analytics["vocab_suggestions"][:10]:
-            pdf.cell(
-                0,
-                7,
-                safe_pdf_text(
-                    f"- Replace '{item['weak']}' with '{item['better']}' (Location: {item['location']})"
-                ),
-                ln=True,
-            )
-    else:
-        pdf.cell(0, 7, safe_pdf_text("No weak vocabulary flagged."), ln=True)
-
-    pdf.ln(3)
-    pdf.set_font("Arial", "B", 13)
-    pdf.cell(0, 8, safe_pdf_text("Section Completeness"), ln=True)
-    pdf.set_font("Arial", "", 11)
-    for section_name, criteria in analytics["completeness"].items():
-        pdf.cell(0, 7, safe_pdf_text(section_name), ln=True)
-        for criterion, status in criteria.items():
-            pdf.cell(0, 7, safe_pdf_text(f"  - {criterion}: {status}"), ln=True)
-
-    raw = pdf.output(dest="S")
-    if isinstance(raw, str):
-        return raw.encode("latin-1")
-    return bytes(raw)
-
-
-def extract_text_from_pdf_file(file: UploadFile) -> str:
-    text = ""
-    with pdfplumber.open(file.file) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-    return text
-
-
-def build_keyword_matrix(multi_results: List[Dict], top_n: int = 20):
-    kw_data = {}
-    for result in multi_results:
-        kw_data[result["filename"]] = set(extract_keywords(result["text"], top_n=top_n))
-
-    all_keywords = set()
-    for values in kw_data.values():
-        all_keywords |= values
-
-    matrix_rows = []
-    for keyword in sorted(all_keywords):
-        presence = {filename: (keyword in kws) for filename, kws in kw_data.items()}
-        matrix_rows.append({"keyword": keyword, "presence": presence})
-
-    return matrix_rows
-
-
-def literature_summary(multi_results: List[Dict], top_n: int = 20):
-    kw_data = {}
-    for result in multi_results:
-        kw_data[result["filename"]] = set(extract_keywords(result["text"], top_n=top_n))
-
-    common = set.intersection(*kw_data.values()) if kw_data else set()
-    unique = {filename: sorted(list(keywords - common))[:8] for filename, keywords in kw_data.items()}
-
-    return {
-        "shared_topics": sorted(list(common)),
-        "unique_topics": unique,
-    }
-
-
-@app.get("/")
-def root():
-    return {"message": "PaperIQ backend is running"}
-
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
-
-
-@app.post("/upload")
-async def upload(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    global stored_text, stored_filename
-
-    try:
-        if not file.filename:
-            raise HTTPException(status_code=400, detail="No file uploaded")
-
-        if not file.filename.lower().endswith(".pdf"):
-            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
-
-        text = extract_text_from_pdf_file(file)
-
-        if not text.strip():
-            raise HTTPException(status_code=400, detail="Could not extract text from PDF")
-
-        stored_text = text[:10000]
-        stored_filename = file.filename
-
-        title = extract_title(stored_text)
-        summary = extract_summary(stored_text)
-        keywords = extract_keywords(stored_text)
-        analytics = analyze_document(stored_text)
-
-        paper = PaperHistory(
-            filename=file.filename,
-            content=stored_text,
-            title=title,
-            summary=summary,
-        )
-        db.add(paper)
-        db.commit()
-
-        return {
-            "message": "File processed successfully 🎉",
-            "filename": file.filename,
-            "preview": stored_text[:2500],
-            "title": title,
-            "summary": summary,
-            "keywords": keywords,
-            "scores": analytics["scores"],
-            "stats": analytics["stats"],
-            "sections": analytics["sections"],
-            "completeness": analytics["completeness"],
-            "long_sentences": analytics["long_sentences"],
-            "vocab_suggestions": analytics["vocab_suggestions"],
-            "sentiment": analytics["sentiment"],
-            "score_trends": analytics["score_trends"],
-            "keyword_frequency": analytics["keyword_frequency"],
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/compare")
-async def compare_documents(files: List[UploadFile] = File(...)):
-    try:
-        if len(files) < 2:
-            raise HTTPException(status_code=400, detail="Upload at least 2 PDF files.")
-        if len(files) > 3:
-            raise HTTPException(status_code=400, detail="Upload at most 3 PDF files.")
-
-        multi_results = []
-
-        for file in files:
-            if not file.filename or not file.filename.lower().endswith(".pdf"):
-                raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
-
-            text = extract_text_from_pdf_file(file)
-            if not text.strip():
-                continue
-
-            trimmed_text = text[:10000]
-            analytics = analyze_document(trimmed_text)
-
-            multi_results.append({
-                "filename": file.filename,
-                "text": trimmed_text,
-                "scores": analytics["scores"],
-                "stats": analytics["stats"],
-                "keywords": extract_keywords(trimmed_text, top_n=10),
-                "summary": extract_summary(trimmed_text),
-            })
-
-        if len(multi_results) < 2:
-            raise HTTPException(status_code=400, detail="Could not analyze enough valid PDF files.")
-
-        return {
-            "documents": multi_results,
-            "literature_map": literature_summary(multi_results, top_n=20),
-            "keyword_matrix": build_keyword_matrix(multi_results, top_n=15),
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/ask")
-async def ask(data: dict, db: Session = Depends(get_db)):
-    global stored_text
-
-    try:
-        question = data.get("question", "").strip()
-
-        if not question:
-            raise HTTPException(status_code=400, detail="Question is required")
-
-        if not stored_text:
-            raise HTTPException(status_code=400, detail="No document uploaded yet")
-
-        fallback = local_answer(question, stored_text)
-        if fallback:
-            answer = fallback
-        else:
-            try:
-                answer = ask_huggingface(question, stored_text)
-            except Exception as e:
-                answer = f"AI temporarily unavailable. {str(e)}"
-
-        chat = ChatHistory(question=question, answer=answer)
-        db.add(chat)
-        db.commit()
-
-        return {"answer": answer}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/history")
-def get_history(db: Session = Depends(get_db), limit: int = 20):
-    chats = (
-        db.query(ChatHistory)
-        .order_by(ChatHistory.id.desc())
-        .limit(limit)
-        .all()
-    )
-
-    return [
-        {
-            "id": chat.id,
-            "question": chat.question,
-            "answer": chat.answer
-        }
-        for chat in chats
-    ]
-
-
-@app.get("/report")
-def download_report():
-    global stored_text, stored_filename
-
-    if not stored_text:
-        raise HTTPException(status_code=400, detail="No document uploaded yet")
-
-    pdf_bytes = create_pdf_report(stored_filename, stored_text)
-    filename = stored_filename.rsplit(".", 1)[0] + "_PaperIQ_Report.pdf"
-
-    return StreamingResponse(
-        BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+            "vocab_diversity":

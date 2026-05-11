@@ -670,4 +670,495 @@ def analyze_document(text: str) -> Dict:
             "sentence_count": sentence_count,
             "avg_sentence_len": avg_sentence_len,
             "avg_word_len": avg_word_len,
+            "vocab_diversity": vocab_diversity,
+            "complex_word_ratio": complex_word_ratio,
+        },
+        "sections": sections,
+        "sections_raw": sections_raw,
+        "completeness": completeness,
+        "long_sentences": long_sentences,
+        "vocab_suggestions": vocab_suggestions,
+        "sentiment": sentiment,
+        "score_trends": score_trends,
+        "keyword_frequency": keyword_frequency,
+        "research_gaps": research_gaps,
+    }
+
+
+def local_skills_answer(text: str) -> str:
+    skill_keywords = [
+        "python",
+        "java",
+        "javascript",
+        "typescript",
+        "react",
+        "next.js",
+        "nextjs",
+        "fastapi",
+        "sql",
+        "mysql",
+        "postgresql",
+        "machine learning",
+        "data science",
+        "html",
+        "css",
+        "tailwind",
+        "streamlit",
+        "full stack",
+        "ai",
+        "nlp",
+        "git",
+        "github",
+        "aws",
+        "ec2",
+        "s3",
+        "docker",
+        "linux",
+    ]
+
+    text_lower = text.lower()
+    found_skills = [skill for skill in skill_keywords if skill in text_lower]
+
+    if found_skills:
+        pretty = ", ".join(dict.fromkeys(found_skills))
+        return f"Skills found: {pretty}"
+
+    return "No predefined skills were clearly detected in the document."
+
+
+def local_internship_answer(text: str) -> str:
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    internship_lines = []
+
+    for line in lines:
+        lower = line.lower()
+        if "intern" in lower or "internship" in lower:
+            internship_lines.append(line)
+
+    internship_lines = list(dict.fromkeys(internship_lines))
+
+    if internship_lines:
+        return "Internships found:\n- " + "\n- ".join(internship_lines[:8])
+
+    return "No internship information was clearly found in the document."
+
+
+def local_email_answer(text: str) -> str:
+    emails = re.findall(r"[\w\.-]+@[\w\.-]+", text)
+    unique_emails = list(dict.fromkeys(emails))
+
+    if unique_emails:
+        return "Emails found: " + ", ".join(unique_emails)
+
+    return "No email found in the document."
+
+
+def local_answer(question: str, text: str) -> str:
+    q = question.lower().strip()
+
+    if "summary" in q or "summarize" in q:
+        return extract_summary(text)
+
+    if "title" in q or "name of the document" in q:
+        return extract_title(text)
+
+    if "keyword" in q:
+        keywords = extract_keywords(text)
+        return "Top keywords: " + ", ".join(keywords) if keywords else "No strong keywords detected."
+
+    if "email" in q:
+        return local_email_answer(text)
+
+    if "skill" in q:
+        return local_skills_answer(text)
+
+    if "intern" in q:
+        return local_internship_answer(text)
+
+    return ""
+
+def ask_huggingface(question: str, context: str) -> str:
+    if not HF_API_KEY:
+        return "HF_API_KEY missing in backend/.env"
+
+    client = InferenceClient(
+        provider="auto",
+        api_key=HF_API_KEY,
+        timeout=60,
+    )
+
+    system_prompt = (
+        "You are a smart academic document assistant. "
+        "Answer clearly, concisely, and only from the provided document context. "
+        "Do not repeat the entire document. "
+        "Prefer short bullet points when useful. "
+        "If the answer is not clearly present, say that honestly."
+    )
+
+    user_prompt = (
+        f"QUESTION:\n{question}\n\n"
+        f"RELEVANT DOCUMENT CONTEXT:\n{context}\n\n"
+        f"ANSWER:"
+    )
+
+    completion = client.chat_completion(
+        model="meta-llama/Meta-Llama-3-8B-Instruct",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=220,
+        temperature=0.25,
+    )
+
+    answer = completion.choices[0].message.content.strip()
+    return answer if answer else "AI couldn't understand. Try rephrasing."
+
+def safe_pdf_text(text: str) -> str:
+    return text.encode("latin-1", "replace").decode("latin-1")
+
+
+def create_pdf_report(filename: str, text: str) -> bytes:
+    analytics = analyze_document(text)
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(0, 10, safe_pdf_text("PaperIQ Analysis Report"), ln=True)
+
+    pdf.set_font("Arial", "", 12)
+    pdf.cell(0, 8, safe_pdf_text(f"Document: {filename}"), ln=True)
+    pdf.ln(4)
+
+    pdf.set_font("Arial", "B", 13)
+    pdf.cell(0, 8, safe_pdf_text("Scores"), ln=True)
+    pdf.set_font("Arial", "", 11)
+    for key, value in analytics["scores"].items():
+        pdf.cell(0, 7, safe_pdf_text(f"{key}: {value}"), ln=True)
+
+    pdf.ln(3)
+    pdf.set_font("Arial", "B", 13)
+    pdf.cell(0, 8, safe_pdf_text("Statistics"), ln=True)
+    pdf.set_font("Arial", "", 11)
+    for key, value in analytics["stats"].items():
+        label = key.replace("_", " ").title()
+        pdf.cell(0, 7, safe_pdf_text(f"{label}: {value}"), ln=True)
+
+    pdf.ln(3)
+    pdf.set_font("Arial", "B", 13)
+    pdf.cell(0, 8, safe_pdf_text("Summary"), ln=True)
+    pdf.set_font("Arial", "", 11)
+    pdf.multi_cell(0, 7, safe_pdf_text(extract_summary(text)))
+
+    pdf.ln(3)
+    pdf.set_font("Arial", "B", 13)
+    pdf.cell(0, 8, safe_pdf_text("Keywords"), ln=True)
+    pdf.set_font("Arial", "", 11)
+    pdf.multi_cell(0, 7, safe_pdf_text(", ".join(extract_keywords(text, top_n=12))))
+
+    pdf.ln(3)
+    pdf.set_font("Arial", "B", 13)
+    pdf.cell(0, 8, safe_pdf_text("Section Summaries"), ln=True)
+    for section_title, section_summary in analytics["sections"].items():
+        pdf.set_font("Arial", "B", 11)
+        pdf.multi_cell(0, 7, safe_pdf_text(section_title))
+        pdf.set_font("Arial", "", 11)
+        pdf.multi_cell(0, 7, safe_pdf_text(section_summary))
+        pdf.ln(1)
+
+    pdf.ln(3)
+    pdf.set_font("Arial", "B", 13)
+    pdf.cell(0, 8, safe_pdf_text("Research Gaps"), ln=True)
+    pdf.set_font("Arial", "", 11)
+    if analytics["research_gaps"]:
+        for gap in analytics["research_gaps"]:
+            pdf.multi_cell(0, 7, safe_pdf_text(f"- {gap}"))
+    else:
+        pdf.cell(0, 7, safe_pdf_text("No strong research gaps detected."), ln=True)
+
+    pdf.ln(3)
+    pdf.set_font("Arial", "B", 13)
+    pdf.cell(0, 8, safe_pdf_text("Long Sentence Issues"), ln=True)
+    pdf.set_font("Arial", "", 11)
+    if analytics["long_sentences"]:
+        for item in analytics["long_sentences"][:6]:
+            pdf.multi_cell(0, 7, safe_pdf_text(f"- {item['sentence']}"))
+            pdf.multi_cell(0, 7, safe_pdf_text(f"  Suggestion: {item['suggestion']}"))
+            pdf.ln(1)
+    else:
+        pdf.cell(0, 7, safe_pdf_text("No long sentence issues found."), ln=True)
+
+    pdf.ln(3)
+    pdf.set_font("Arial", "B", 13)
+    pdf.cell(0, 8, safe_pdf_text("Vocabulary Suggestions"), ln=True)
+    pdf.set_font("Arial", "", 11)
+    if analytics["vocab_suggestions"]:
+        for item in analytics["vocab_suggestions"][:10]:
+            pdf.cell(
+                0,
+                7,
+                safe_pdf_text(
+                    f"- Replace '{item['weak']}' with '{item['better']}' (Location: {item['location']})"
+                ),
+                ln=True,
+            )
+    else:
+        pdf.cell(0, 7, safe_pdf_text("No weak vocabulary flagged."), ln=True)
+
+    pdf.ln(3)
+    pdf.set_font("Arial", "B", 13)
+    pdf.cell(0, 8, safe_pdf_text("Section Completeness"), ln=True)
+    pdf.set_font("Arial", "", 11)
+    for section_name, criteria in analytics["completeness"].items():
+        pdf.cell(0, 7, safe_pdf_text(section_name), ln=True)
+        for criterion, status in criteria.items():
+            pdf.cell(0, 7, safe_pdf_text(f"  - {criterion}: {status}"), ln=True)
+
+    raw = pdf.output(dest="S")
+    if isinstance(raw, str):
+        return raw.encode("latin-1")
+    return bytes(raw)
+
+
+def extract_text_from_pdf_file(file: UploadFile) -> str:
+    text = ""
+    with pdfplumber.open(file.file) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    return text
+
+
+def build_keyword_matrix(multi_results: List[Dict], top_n: int = 20):
+    kw_data = {}
+    for result in multi_results:
+        kw_data[result["filename"]] = set(extract_keywords(result["text"], top_n=top_n))
+
+    all_keywords = set()
+    for values in kw_data.values():
+        all_keywords |= values
+
+    matrix_rows = []
+    for keyword in sorted(all_keywords):
+        presence = {filename: (keyword in kws) for filename, kws in kw_data.items()}
+        matrix_rows.append({"keyword": keyword, "presence": presence})
+
+    return matrix_rows
+
+
+def literature_summary(multi_results: List[Dict], top_n: int = 20):
+    kw_data = {}
+    for result in multi_results:
+        kw_data[result["filename"]] = set(extract_keywords(result["text"], top_n=top_n))
+
+    common = set.intersection(*kw_data.values()) if kw_data else set()
+    unique = {filename: sorted(list(keywords - common))[:8] for filename, keywords in kw_data.items()}
+
+    return {
+        "shared_topics": sorted(list(common)),
+        "unique_topics": unique,
+    }
+
+
+@app.get("/")
+def root():
+    return {"message": "PaperIQ backend is running"}
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
+
+@app.post("/upload")
+async def upload(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    global stored_text, stored_filename, vector_store
+
+    try:
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="No file uploaded")
+
+        if not file.filename.lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+
+        text = extract_text_from_pdf_file(file)
+
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="Could not extract text from PDF")
+
+        stored_text = text[:10000]
+        stored_filename = file.filename
+
+        chunks = chunk_text(stored_text, chunk_size=300, overlap=50)
+        vector_store.build_index(chunks)
+
+        title = extract_title(stored_text)
+        summary = extract_summary(stored_text)
+        keywords = extract_keywords(stored_text)
+        analytics = analyze_document(stored_text)
+
+        paper = PaperHistory(
+            filename=file.filename,
+            content=stored_text,
+            title=title,
+            summary=summary,
+        )
+        db.add(paper)
+        db.commit()
+
+        return {
+            "message": "File processed successfully 🎉",
+            "filename": file.filename,
+            "preview": stored_text[:2500],
+            "title": title,
+            "summary": summary,
+            "keywords": keywords,
+            "scores": analytics["scores"],
+            "stats": analytics["stats"],
+            "sections": analytics["sections"],
+            "completeness": analytics["completeness"],
+            "long_sentences": analytics["long_sentences"],
+            "vocab_suggestions": analytics["vocab_suggestions"],
+            "sentiment": analytics["sentiment"],
+            "score_trends": analytics["score_trends"],
+            "keyword_frequency": analytics["keyword_frequency"],
+            "research_gaps": analytics["research_gaps"],
+            "chunks_indexed": len(chunks),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/compare")
+async def compare_documents(files: List[UploadFile] = File(...)):
+    try:
+        if len(files) < 2:
+            raise HTTPException(status_code=400, detail="Upload at least 2 PDF files.")
+        if len(files) > 3:
+            raise HTTPException(status_code=400, detail="Upload at most 3 PDF files.")
+
+        multi_results = []
+
+        for file in files:
+            if not file.filename or not file.filename.lower().endswith(".pdf"):
+                raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
+
+            text = extract_text_from_pdf_file(file)
+            if not text.strip():
+                continue
+
+            trimmed_text = text[:10000]
+            analytics = analyze_document(trimmed_text)
+
+            multi_results.append(
+                {
+                    "filename": file.filename,
+                    "text": trimmed_text,
+                    "scores": analytics["scores"],
+                    "stats": analytics["stats"],
+                    "keywords": extract_keywords(trimmed_text, top_n=10),
+                    "summary": extract_summary(trimmed_text),
+                    "research_gaps": analytics["research_gaps"],
+                    "sections": analytics["sections"],
+                    "sentiment": analytics["sentiment"],
+                }
+            )
+
+        if len(multi_results) < 2:
+            raise HTTPException(status_code=400, detail="Could not analyze enough valid PDF files.")
+
+        literature_map = literature_summary(multi_results, top_n=20)
+        keyword_matrix = build_keyword_matrix(multi_results, top_n=15)
+
+        return {
+            "documents": multi_results,
+            "literature_map": literature_map,
+            "keyword_matrix": keyword_matrix,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ask")
+async def ask(data: dict, db: Session = Depends(get_db)):
+    global stored_text, vector_store
+
+    try:
+        question = data.get("question", "").strip()
+
+        if not question:
+            raise HTTPException(status_code=400, detail="Question is required")
+
+        if not stored_text:
+            raise HTTPException(status_code=400, detail="No document uploaded yet")
+
+        fallback = local_answer(question, stored_text)
+        citations: List[str] = []
+
+        if fallback:
+            answer = fallback
+        else:
+            try:
+                retrieved = vector_store.search(question, k=3)
+
+                if not retrieved:
+                    context = stored_text[:3000]
+                else:
+                    context = "\n\n".join([f"[Chunk {item['index']}] {item['chunk']}" for item in retrieved])
+                    citations = [f"Chunk {item['index']}" for item in retrieved]
+
+                answer = ask_huggingface(question, context)
+
+                if citations:
+                    answer = f"{answer}\n\nSources:\n" + "\n".join([f"- {c}" for c in citations])
+
+            except Exception as e:
+                answer = f"AI temporarily unavailable. {str(e)}"
+
+        chat = ChatHistory(question=question, answer=answer)
+        db.add(chat)
+        db.commit()
+
+        return {
+            "answer": answer,
+            "citations": citations,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/history")
+def get_history(db: Session = Depends(get_db), limit: int = 20):
+    chats = db.query(ChatHistory).order_by(ChatHistory.id.desc()).limit(limit).all()
+
+    return [{"id": chat.id, "question": chat.question, "answer": chat.answer} for chat in chats]
+
+
+@app.get("/report")
+def download_report():
+    global stored_text, stored_filename
+
+    if not stored_text:
+        raise HTTPException(status_code=400, detail="No document uploaded yet")
+
+    pdf_bytes = create_pdf_report(stored_filename, stored_text)
+    filename = stored_filename.rsplit(".", 1)[0] + "_PaperIQ_Report.pdf"
+
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
             "vocab_diversity":
